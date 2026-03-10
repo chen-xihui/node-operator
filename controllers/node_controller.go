@@ -87,7 +87,7 @@ func (r *NodeReconciler) updateNodeStatusInNodeGroup(ctx context.Context, nodeGr
 			},
 		}
 
-		// Check if node is a primary or backup
+		// Check if node is a primary, backup, or dedicated
 		for _, primaryNode := range nodeGroup.Status.PrimaryNodes {
 			if primaryNode == node.Name {
 				nodeStatus.Role = "primary"
@@ -97,6 +97,12 @@ func (r *NodeReconciler) updateNodeStatusInNodeGroup(ctx context.Context, nodeGr
 		for _, backupNode := range nodeGroup.Status.BackupNodes {
 			if backupNode == node.Name {
 				nodeStatus.Role = "backup"
+				break
+			}
+		}
+		for _, dedicatedNode := range nodeGroup.Status.DedicatedNodes {
+			if dedicatedNode == node.Name {
+				nodeStatus.Role = "dedicated"
 				break
 			}
 		}
