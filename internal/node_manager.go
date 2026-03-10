@@ -21,17 +21,17 @@ func NewNodeManager(c client.Client) *NodeManager {
 }
 
 type NodeInfo struct {
-	Name            string
-	Zone            string
-	Labels          map[string]string
-	Taints          []corev1.Taint
-	IsReady         bool
-	CPUAllocatable  resource.Quantity
+	Name              string
+	Zone              string
+	Labels            map[string]string
+	Taints            []corev1.Taint
+	IsReady           bool
+	CPUAllocatable    resource.Quantity
 	MemoryAllocatable resource.Quantity
-	CPUUsed          resource.Quantity
-	MemoryUsed       resource.Quantity
-	CPUPercent       int
-	MemoryPercent    int
+	CPUUsed           resource.Quantity
+	MemoryUsed        resource.Quantity
+	CPUPercent        int
+	MemoryPercent     int
 }
 
 func (nm *NodeManager) GetAllNodes(ctx context.Context, nodeSelector map[string]string) ([]NodeInfo, error) {
@@ -50,17 +50,21 @@ func (nm *NodeManager) GetAllNodes(ctx context.Context, nodeSelector map[string]
 
 func (nm *NodeManager) convertToNodeInfo(node corev1.Node) NodeInfo {
 	nodeInfo := NodeInfo{
-		Name:       node.Name,
-		Labels:     node.Labels,
-		Taints:     node.Spec.Taints,
-		IsReady:    isNodeReady(node),
-		Zone:       node.Labels[nodeoperatorv1alpha1.LabelZone],
+		Name:    node.Name,
+		Labels:  node.Labels,
+		Taints:  node.Spec.Taints,
+		IsReady: isNodeReady(node),
+		Zone:    node.Labels[nodeoperatorv1alpha1.LabelZone],
 	}
 
 	allocatable := node.Status.Allocatable
 	if allocatable != nil {
-		nodeInfo.CPUAllocatable = allocatable.Cpu()
-		nodeInfo.MemoryAllocatable = allocatable.Memory()
+		if cpu := allocatable.Cpu(); cpu != nil {
+			nodeInfo.CPUAllocatable = *cpu
+		}
+		if memory := allocatable.Memory(); memory != nil {
+			nodeInfo.MemoryAllocatable = *memory
+		}
 	}
 
 	return nodeInfo
@@ -338,7 +342,7 @@ func PrintNodeInfo(nodes []NodeInfo) string {
 		for k, v := range node.Labels {
 			labels += fmt.Sprintf("%s=%s,", k, v)
 		}
-		str += fmt.Sprintf("Node: %s, Zone: %s, Ready: %v, Labels: %s\n", 
+		str += fmt.Sprintf("Node: %s, Zone: %s, Ready: %v, Labels: %s\n",
 			node.Name, node.Zone, node.IsReady, labels)
 	}
 	return str

@@ -124,9 +124,9 @@ func TestNodeGroupReconciler(t *testing.T) {
 		t.Fatalf("Failed to get updated NodeGroup: %v", err)
 	}
 
-	// Verify master and backup nodes are set
-	if len(updatedNodeGroup.Status.MasterNodes) != 1 {
-		t.Errorf("Expected 1 master node, got %d", len(updatedNodeGroup.Status.MasterNodes))
+	// Verify primary and backup nodes are set
+	if len(updatedNodeGroup.Status.PrimaryNodes) != 1 {
+		t.Errorf("Expected 1 primary node, got %d", len(updatedNodeGroup.Status.PrimaryNodes))
 	}
 
 	if len(updatedNodeGroup.Status.BackupNodes) != 1 {
@@ -134,7 +134,7 @@ func TestNodeGroupReconciler(t *testing.T) {
 	}
 
 	// Test failover
-	// Make master node unhealthy
+	// Make primary node unhealthy
 	unhealthyNode := node1.DeepCopy()
 	unhealthyNode.Status.Conditions[0].Status = corev1.ConditionFalse
 	if err := k8sClient.Status().Update(context.Background(), unhealthyNode); err != nil {
@@ -153,8 +153,8 @@ func TestNodeGroupReconciler(t *testing.T) {
 	}
 
 	// Verify failover occurred
-	if len(updatedNodeGroup.Status.MasterNodes) != 1 {
-		t.Errorf("Expected 1 master node after failover, got %d", len(updatedNodeGroup.Status.MasterNodes))
+	if len(updatedNodeGroup.Status.PrimaryNodes) != 1 {
+		t.Errorf("Expected 1 primary node after failover, got %d", len(updatedNodeGroup.Status.PrimaryNodes))
 	}
 
 	// Verify last failover time is set

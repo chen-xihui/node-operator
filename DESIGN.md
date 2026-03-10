@@ -155,12 +155,61 @@ affinity:
 
 ## 5. 实现细节
 
+### 5.1 API 定义
+
+#### 5.1.1 NodeGroup CRD
+```go
+type NodeGroupSpec struct {
+	MasterCount       int                    `json:"masterCount"`
+	BackupCount       int                    `json:"backupCount"`
+	ResourceThreshold int                    `json:"resourceThreshold"`
+	NodeSelector      map[string]string      `json:"nodeSelector"`
+	FailoverPolicy    FailoverPolicy         `json:"failoverPolicy"`
+	Zones             []string               `json:"zones"`
+	InitialBackupCount map[string]int        `json:"initialBackupCount"`
+}
+
+type NodeGroupStatus struct {
+	PrimaryNodes      []string              `json:"primaryNodes"`
+	BackupNodes       []string              `json:"backupNodes"`
+	FailedNodes       []string              `json:"failedNodes"`
+	OverloadedNodes   []string              `json:"overloadedNodes"`
+	LastFailoverTime  *metav1.Time          `json:"lastFailoverTime,omitempty"`
+	ZoneStatus        map[string]ZoneStatus `json:"zoneStatus"`
+	NodeStatuses      map[string]NodeStatus `json:"nodeStatuses"`
+}
+
+type ZoneStatus struct {
+	PrimaryCount int `json:"primaryCount"`
+	BackupCount  int `json:"backupCount"`
+	FailedCount  int `json:"failedCount"`
+}
+
+type NodeStatus struct {
+	Role          string       `json:"role"`
+	Health        string       `json:"health"`
+	ResourceUsage ResourceUsage `json:"resourceUsage"`
+}
+
+type ResourceUsage struct {
+	CPU    int `json:"cpu"`
+	Memory int `json:"memory"`
+	Disk   int `json:"disk"`
+}
+
+type FailoverPolicy struct {
+	Enabled bool `json:"enabled"`
+	Timeout int  `json:"timeout"`
+}
+```
+
 ### 5.2 核心组件
 - **节点管理器**：定期检测节点状态和资源使用率，处理故障转移
 - **可用区管理器**：管理可用区分类，处理跨可用区兜底逻辑
 - **资源管理器**：监控节点资源使用情况，处理过载节点
-- **节点调度器**：智能选择备用节点进行升级
-- **恢复处理器**：处理故障节点恢复后的角色调整
+- **故障转移处理器**：处理主用节点故障和过载的情况
+- **节点控制器**：监控节点状态变化并更新 NodeGroup 状态
+- **NodeGroup 控制器**：协调所有管理器，实现主要的 reconciliation 逻辑
 
 ### 5.3 资源管理策略
 
@@ -222,6 +271,51 @@ affinity:
 
 ## 6. 部署与使用
 
+### 6.1 安装步骤
+1. **安装 CRD**
+   ```bash
+   kubectl apply -f config/crd/bases/nodeoperator.k8s.io_nodegroups.yaml
+   ```
+
+2. **部署 Operator**
+   ```bash
+   kubectl apply -f config/rbac/role.yaml
+   kubectl apply -f config/rbac/role_binding.yaml
+   kubectl apply -f config/manager/manager.yaml
+   ```
+
+3. **创建 NodeGroup CR**
+   ```yaml
+   apiVersion: nodeoperator.k8s.io/v1alpha1
+   kind: NodeGroup
+   metadata:
+     name: example-nodegroup
+     namespace: default
+   spec:
+     masterCount: 3
+     backupCount: 1
+     resourceThreshold: 85
+     nodeSelector:
+       kubernetes.io/os: linux
+     failoverPolicy:
+       enabled: true
+       timeout: 30
+     zones:
+     - region-name.az01arm
+     - region-name.az02arm
+     - region-name.az03arm
+   ```
+
+### 6.2 配置选项
+- `masterCount`：主用节点数量
+- `backupCount`：备用节点数量
+- `resourceThreshold`：资源使用率阈值（%）
+- `nodeSelector`：节点选择器
+- `failoverPolicy.enabled`：是否启用故障转移
+- `failoverPolicy.timeout`：故障转移超时时间（秒）
+- `zones`：可用区列表
+- `initialBackupCount`：各可用区初始备用节点数量
+
 ## 7. 监控与日志
 
 ### 7.1 监控指标
@@ -250,6 +344,7 @@ affinity:
 - **智能资源管理**：基于资源使用率动态调整节点状态
 - **高可用性**：确保主用节点故障时能够快速切换到备用节点
 - **灵活性**：可以根据实际需求调整备用节点数量和资源阈值
+- **多可用区支持**：实现可用区内的节点平衡，提高集群的容错能力
 
 ### 8.2 限制
 - **依赖Kubernetes API**：需要足够的权限来管理节点标签和污点

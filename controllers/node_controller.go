@@ -78,7 +78,7 @@ func (r *NodeReconciler) updateNodeStatusInNodeGroup(ctx context.Context, nodeGr
 
 		// Update node status
 		nodeStatus := nodeoperatorv1alpha1.NodeStatus{
-			Role: "none",
+			Role:   "none",
 			Health: health,
 			ResourceUsage: nodeoperatorv1alpha1.ResourceUsage{
 				CPU:    cpuUsage,
@@ -87,10 +87,10 @@ func (r *NodeReconciler) updateNodeStatusInNodeGroup(ctx context.Context, nodeGr
 			},
 		}
 
-		// Check if node is a master or backup
-		for _, masterNode := range nodeGroup.Status.MasterNodes {
-			if masterNode == node.Name {
-				nodeStatus.Role = "master"
+		// Check if node is a primary or backup
+		for _, primaryNode := range nodeGroup.Status.PrimaryNodes {
+			if primaryNode == node.Name {
+				nodeStatus.Role = "primary"
 				break
 			}
 		}
@@ -108,6 +108,27 @@ func (r *NodeReconciler) updateNodeStatusInNodeGroup(ctx context.Context, nodeGr
 			log.FromContext(ctx).Error(err, "unable to update NodeGroup status", "nodeGroup", nodeGroup.Name)
 		}
 	}
+}
+
+// calculateCPUUsage calculates the CPU usage of a node
+func calculateCPUUsage(node corev1.Node) int {
+	// This is a simplified calculation
+	// In a real implementation, you would use metrics-server or similar
+	return 0
+}
+
+// calculateMemoryUsage calculates the memory usage of a node
+func calculateMemoryUsage(node corev1.Node) int {
+	// This is a simplified calculation
+	// In a real implementation, you would use metrics-server or similar
+	return 0
+}
+
+// calculateDiskUsage calculates the disk usage of a node
+func calculateDiskUsage(node corev1.Node) int {
+	// This is a simplified calculation
+	// In a real implementation, you would use metrics-server or similar
+	return 0
 }
 
 // SetupWithManager sets up the controller with the Manager.

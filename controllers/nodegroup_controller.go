@@ -378,6 +378,13 @@ func (r *NodeGroupReconciler) getBackupNodesInZone(nodes []internal.NodeInfo, zo
 	return backups
 }
 
+func (r *NodeGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&nodeoperatorv1alpha1.NodeGroup{}).
+		Owns(&corev1.Node{}).
+		Complete(r)
+}
+
 func SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&nodeoperatorv1alpha1.NodeGroup{}).
