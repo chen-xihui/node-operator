@@ -1,0 +1,8 @@
+domain: example.com
+layout: go.kubebuilder.io/v3
+projectName: node-operator
+repo: node-operator
+resources:
+- api: v1alpha1
+  kind: NodeGroup
+version: 3-alpha
