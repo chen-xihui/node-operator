@@ -281,6 +281,20 @@ func (nm *NodeManager) CalculateAvailableResources(node NodeInfo) (cpu resource.
 	return
 }
 
+// SelectBestBackupNode 从备用节点中选择最优的节点进行升级
+// 根据资源可用性和可用区策略选择最适合升级为主用节点的备用节点
+// 选择策略：
+//  1. 优先选择同一可用区的节点（避免跨可用区迁移）
+//  2. 选择资源最充足的节点（CPU 优先，内存次之）
+//  3. 排除指定的可用区（用于避免在故障可用区中选择）
+//
+// 参数:
+//   - ctx: 上下文，用于日志记录和取消操作
+//   - backupNodes: 可用的备用节点列表
+//   - excludeZones: 需要排除的可用区列表
+//
+// 返回值:
+//   - *NodeInfo: 选中的最优备用节点，如果没有合适的节点返回 nil
 func (nm *NodeManager) SelectBestBackupNode(ctx context.Context, backupNodes []NodeInfo, excludeZones []string) *NodeInfo {
 	var bestNode *NodeInfo
 	var maxScore int64 = -1

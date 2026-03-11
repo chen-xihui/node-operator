@@ -153,6 +153,7 @@ func (r *NodeGroupReconciler) syncNodeStatuses(ctx context.Context, nodeGroup *n
 		if node.Labels[nodeoperatorv1alpha1.LabelPaas] == "true" {
 			primaryMap[node.Name] = true
 		}
+		// 检查是否为 dedicated 节点，目前仅是为了统计
 		if node.Labels[nodeoperatorv1alpha1.LabelDedicated] == "true" {
 			dedicatedMap[node.Name] = true
 		}
@@ -183,8 +184,14 @@ func (r *NodeGroupReconciler) syncNodeStatuses(ctx context.Context, nodeGroup *n
 			memPercent = usage.MemoryPercent
 		}
 
-		isPromoted := node.Labels[nodeoperatorv1alpha1.LabelPromoted] == "true"
-		promotedFrom := nodeGroup.Status.PromotedNodes[node.Name]
+		isPromoted := false
+		if node.Labels != nil {
+			isPromoted = node.Labels[nodeoperatorv1alpha1.LabelPromoted] == "true"
+		}
+		promotedFrom := ""
+		if nodeGroup.Status.PromotedNodes != nil {
+			promotedFrom = nodeGroup.Status.PromotedNodes[node.Name]
+		}
 
 		nodeGroup.Status.NodeStatuses[node.Name] = nodeoperatorv1alpha1.NodeStatus{
 			Role:   role,
@@ -232,10 +239,14 @@ func (r *NodeGroupReconciler) handleFailures(ctx context.Context, nodeGroup *nod
 		}
 	}
 
+	// 处理主用节点故障
 	for _, node := range nodes {
+		// 检查节点是否不健康且是主用节点
 		if !node.IsReady && node.Labels[nodeoperatorv1alpha1.LabelPaas] == "true" {
+			// 确保节点尚未被标记为故障节点
 			if node.Labels[nodeoperatorv1alpha1.LabelFailed] != "true" {
 				log.FromContext(ctx).Info("Primary node became unhealthy", "node", node.Name)
+				// 调用故障转移处理器处理主用节点故障
 				if err := failoverHandler.HandlePrimaryFailure(ctx, node.Name, nodes); err != nil {
 					log.FromContext(ctx).Error(err, "Failed to handle primary failure", "node", node.Name)
 				}
@@ -246,6 +257,20 @@ func (r *NodeGroupReconciler) handleFailures(ctx context.Context, nodeGroup *nod
 	return nil
 }
 
+// handleOverloads 处理主用节点过载情况，防止资源过载影响服务稳定性
+// 当主用节点资源使用率超过阈值时，执行过载处理逻辑：
+//  1. 为过载节点添加污点，防止新 Pod 调度到该节点
+//  2. 如果同一可用区的主用节点数量不足，从备用节点中选择节点进行升级
+//
+// 参数:
+//   - ctx: 上下文，用于日志记录和取消操作
+//   - nodeGroup: 当前处理的 NodeGroup 资源
+//   - nodes: 所有节点的信息列表
+//   - resourceManager: 资源管理器，用于检测过载节点
+//   - failoverHandler: 故障转移处理器，用于执行节点升级
+//
+// 返回值:
+//   - error: 处理过程中出现的错误，成功时返回 nil
 func (r *NodeGroupReconciler) handleOverloads(ctx context.Context, nodeGroup *nodeoperatorv1alpha1.NodeGroup, nodes []internal.NodeInfo, resourceManager *internal.ResourceManager, failoverHandler *internal.FailoverHandler) error {
 	if !nodeGroup.Spec.FailoverPolicy.Enabled {
 		return nil
@@ -267,10 +292,14 @@ func (r *NodeGroupReconciler) handleOverloads(ctx context.Context, nodeGroup *no
 		previousOverloaded[nodeName] = true
 	}
 
+	// 检测新出现的过载主用节点并执行过载处理
 	for _, node := range nodes {
+		// 检查节点是否当前过载且之前未过载（新出现的过载）
 		if currentOverloaded[node.Name] && !previousOverloaded[node.Name] {
+			// 确保只处理主用节点的过载
 			if node.Labels[nodeoperatorv1alpha1.LabelPaas] == "true" {
 				log.FromContext(ctx).Info("Primary node became overloaded", "node", node.Name)
+				// 调用过载处理器，为过载节点添加污点并可能升级备用节点
 				if err := failoverHandler.HandleOverloadedNode(ctx, node.Name, nodes); err != nil {
 					log.FromContext(ctx).Error(err, "Failed to handle overloaded node", "node", node.Name)
 				}

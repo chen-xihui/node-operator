@@ -118,7 +118,7 @@ func (rm *ResourceManager) getNodeMetricsFromKubectl(ctx context.Context, nodeNa
 
 func (rm *ResourceManager) GetAllNodesResourceUsage(ctx context.Context, nodeNames []string) (map[string]*NodeResourceUsage, error) {
 	usages := make(map[string]*NodeResourceUsage)
-
+	// TODO：这里是否这样实现？是否需要优化？
 	cmd := exec.Command("kubectl", "top", "node", "--no-headers")
 	output, err := cmd.Output()
 	if err != nil {
@@ -126,40 +126,64 @@ func (rm *ResourceManager) GetAllNodesResourceUsage(ctx context.Context, nodeNam
 		return usages, err
 	}
 
-	lines := strings.Split(string(output), "\n")
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 	for _, line := range lines {
 		fields := strings.Fields(line)
-		if len(fields) >= 5 {
-			nodeName := fields[0]
+		if len(fields) < 5 {
+			continue
+		}
 
-			found := false
-			if len(nodeNames) == 0 {
-				found = true
-			} else {
-				for _, n := range nodeNames {
-					if n == nodeName {
-						found = true
-						break
-					}
+		nodeName := fields[0]
+
+		found := false
+		if len(nodeNames) == 0 {
+			found = true
+		} else {
+			for _, n := range nodeNames {
+				if n == nodeName {
+					found = true
+					break
 				}
 			}
+		}
 
-			if found {
-				cpuStr := strings.ReplaceAll(fields[1], "m", "")
-				cpuStr = strings.ReplaceAll(cpuStr, "%", "")
-				memStr := strings.ReplaceAll(fields[2], "Mi", "")
-				memStr = strings.ReplaceAll(memStr, "%", "")
+		if found {
+			// 正确解析 CPU 百分比 (fields[2])
+			cpuPercentStr := strings.TrimSuffix(fields[2], "%")
+			cpuPercent, err := strconv.Atoi(cpuPercentStr)
+			if err != nil {
+				log.FromContext(ctx).Error(err, "Failed to parse CPU percent", "node", nodeName, "value", fields[2])
+				continue
+			}
 
-				cpu, _ := strconv.Atoi(cpuStr)
-				mem, _ := strconv.Atoi(memStr)
+			// 正确解析内存百分比 (fields[4])
+			memPercentStr := strings.TrimSuffix(fields[4], "%")
+			memPercent, err := strconv.Atoi(memPercentStr)
+			if err != nil {
+				log.FromContext(ctx).Error(err, "Failed to parse memory percent", "node", nodeName, "value", fields[4])
+				continue
+			}
 
-				usages[nodeName] = &NodeResourceUsage{
-					NodeName:      nodeName,
-					CPUUsed:       int64(cpu),
-					MemUsed:       int64(mem),
-					CPUPercent:    cpu,
-					MemoryPercent: mem,
-				}
+			// 解析 CPU 使用量 (fields[1]) - 可选，用于记录
+			cpuUsedStr := strings.TrimSuffix(fields[1], "m")
+			cpuUsed, err := strconv.Atoi(cpuUsedStr)
+			if err != nil {
+				cpuUsed = 0 // 如果解析失败，设为0
+			}
+
+			// 解析内存使用量 (fields[3]) - 可选，用于记录
+			memUsedStr := strings.TrimSuffix(fields[3], "Mi")
+			memUsed, err := strconv.Atoi(memUsedStr)
+			if err != nil {
+				memUsed = 0 // 如果解析失败，设为0
+			}
+
+			usages[nodeName] = &NodeResourceUsage{
+				NodeName:      nodeName,
+				CPUUsed:       int64(cpuUsed),
+				MemUsed:       int64(memUsed),
+				CPUPercent:    cpuPercent,
+				MemoryPercent: memPercent,
 			}
 		}
 	}
