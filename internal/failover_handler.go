@@ -5,6 +5,8 @@ import (
 
 	nodeoperatorv1alpha1 "node-operator/api/v1alpha1"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -32,12 +34,17 @@ func NewFailoverHandler(nm *NodeManager, zm *ZoneManager, rm *ResourceManager, m
 //   - ctx: 上下文，用于取消操作和传递超时
 //   - failedNodeName: 故障的主用节点名称
 //   - allNodes: 所有节点的信息列表
+//   - nodeGroup: NodeGroup 资源，用于更新状态信息
 //
 // 返回值:
 //   - error: 操作过程中出现的错误，成功时返回 nil
-func (fh *FailoverHandler) HandlePrimaryFailure(ctx context.Context, failedNodeName string, allNodes []NodeInfo) error {
+func (fh *FailoverHandler) HandlePrimaryFailure(ctx context.Context, failedNodeName string, allNodes []NodeInfo, nodeGroup *nodeoperatorv1alpha1.NodeGroup) error {
 	log.FromContext(ctx).Info("Handling primary node failure", "failedNode", failedNodeName)
 
+	if err := fh.nodeManager.AddFailedTaint(ctx, failedNodeName); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to add failed taint", "node", failedNodeName)
+		return err
+	}
 	if err := fh.nodeManager.AddFailedLabel(ctx, failedNodeName); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to add failed label", "node", failedNodeName)
 		return err
@@ -98,6 +105,16 @@ func (fh *FailoverHandler) HandlePrimaryFailure(ctx context.Context, failedNodeN
 				return err
 			}
 
+			// 更新 NodeGroup Status 中的 PromotedNodes 字段
+			if nodeGroup.Status.PromotedNodes == nil {
+				nodeGroup.Status.PromotedNodes = make(map[string]string)
+			}
+			nodeGroup.Status.PromotedNodes[bestNode.Name] = failedNodeZone
+
+			// 设置故障转移时间戳
+			now := metav1.Now()
+			nodeGroup.Status.LastFailoverTime = &now
+
 			promotedNodes[bestNode.Name] = failedNodeZone
 		}
 	}
@@ -115,11 +132,29 @@ func (fh *FailoverHandler) HandlePrimaryFailure(ctx context.Context, failedNodeN
 //   - ctx: 上下文，用于日志记录和取消操作
 //   - overloadedNodeName: 过载的主用节点名称
 //   - allNodes: 所有节点的信息列表
+//   - nodeGroup: NodeGroup 资源，用于更新状态信息
 //
 // 返回值:
 //   - error: 处理过程中出现的错误，成功时返回 nil
-func (fh *FailoverHandler) HandleOverloadedNode(ctx context.Context, overloadedNodeName string, allNodes []NodeInfo) error {
+func (fh *FailoverHandler) HandleOverloadedNode(ctx context.Context, overloadedNodeName string, allNodes []NodeInfo, nodeGroup *nodeoperatorv1alpha1.NodeGroup) error {
 	log.FromContext(ctx).Info("Handling overloaded node", "node", overloadedNodeName)
+
+	// 更新 NodeGroup Status 中的 OverloadedNodes 字段
+	if nodeGroup.Status.OverloadedNodes == nil {
+		nodeGroup.Status.OverloadedNodes = []string{}
+	}
+	// 检查是否已经记录过该过载节点
+	alreadyRecorded := false
+	for _, nodeName := range nodeGroup.Status.OverloadedNodes {
+		if nodeName == overloadedNodeName {
+			alreadyRecorded = true
+			break
+		}
+	}
+	// 如果没有记录过，则添加到过载节点列表
+	if !alreadyRecorded {
+		nodeGroup.Status.OverloadedNodes = append(nodeGroup.Status.OverloadedNodes, overloadedNodeName)
+	}
 
 	if err := fh.nodeManager.AddOverloadedTaint(ctx, overloadedNodeName); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to add overloaded taint", "node", overloadedNodeName)
@@ -189,19 +224,21 @@ func (fh *FailoverHandler) HandleOverloadedNode(ctx context.Context, overloadedN
 // HandleNodeRecovery 处理节点恢复情况，执行恢复后的节点管理
 // 当故障或过载节点恢复正常时，采取以下措施：
 //  1. 移除故障或过载标签，使节点恢复正常状态
-//  2. 检查是否需要降级升级节点，保持备用节点数量稳定
+//  2. 检查是否需要降级刚恢复的节点，保持备用节点数量稳定
 //  3. 确保节点角色分配的合理性，避免资源浪费
 //
 // 参数:
 //   - ctx: 上下文，用于日志记录和取消操作
 //   - recoveredNodeName: 恢复的节点名称
 //   - allNodes: 所有节点的信息列表
+//   - nodeGroup: NodeGroup 资源，用于更新状态信息
 //
 // 返回值:
 //   - error: 处理过程中出现的错误，成功时返回 nil
-func (fh *FailoverHandler) HandleNodeRecovery(ctx context.Context, recoveredNodeName string, allNodes []NodeInfo) error {
+func (fh *FailoverHandler) HandleNodeRecovery(ctx context.Context, recoveredNodeName string, allNodes []NodeInfo, nodeGroup *nodeoperatorv1alpha1.NodeGroup) error {
 	log.FromContext(ctx).Info("Handling node recovery", "node", recoveredNodeName)
 
+	// 保留标签移除操作（如果需要向后兼容）
 	if err := fh.nodeManager.RemoveFailedLabel(ctx, recoveredNodeName); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to remove failed label", "node", recoveredNodeName)
 		return err
@@ -258,38 +295,58 @@ func (fh *FailoverHandler) HandleNodeRecovery(ctx context.Context, recoveredNode
 				log.FromContext(ctx).Error(err, "Failed to remove paas label", "node", recoveredNodeName)
 				return err
 			}
-		} else if s.PromotedCount > 0 {
-			// 情况2：如果当前备用节点充足，但有升级节点，降级一个升级节点
+		} else {
+			// 情况2：如果当前备用节点充足，说明故障影响已完全消除
+			// 清理所有升级标记，让系统恢复到初始状态
+			log.FromContext(ctx).Info("Backup nodes are sufficient, cleaning up all promoted labels", "zone", recoveredNodeZone, "currentBackupCount", currentBackupCount, "expectedBackupCount", expectedBackupCount)
+			// TODO：是否需要更新status里的信息，比如PromotedCount等
+			// 清理所有升级节点的标记
 			for _, node := range allNodes {
-				// 查找同一可用区的升级节点进行降级
-				if node.Labels[nodeoperatorv1alpha1.LabelPromoted] == "true" && node.Zone == recoveredNodeZone {
-					log.FromContext(ctx).Info("Demoting promoted node to backup", "node", node.Name)
-					// 移除主用节点标签，降级为备用节点
-					if err := fh.nodeManager.RemovePaasLabel(ctx, node.Name); err != nil {
-						log.FromContext(ctx).Error(err, "Failed to remove paas label", "node", node.Name)
-						return err
-					}
-					// 移除升级标记，恢复为普通备用节点
+				if node.Labels[nodeoperatorv1alpha1.LabelPromoted] == "true" {
+					log.FromContext(ctx).Info("Cleaning up promoted label from node", "node", node.Name)
 					if err := fh.nodeManager.RemovePromotedLabel(ctx, node.Name); err != nil {
 						log.FromContext(ctx).Error(err, "Failed to remove promoted label", "node", node.Name)
-						return err
+						// 继续清理其他节点，不立即返回错误
 					}
-					break
+
+					// 从 NodeGroup Status 中移除升级节点记录
+					if nodeGroup.Status.PromotedNodes != nil {
+						delete(nodeGroup.Status.PromotedNodes, node.Name)
+					}
 				}
 			}
 		}
 
 	}
 
+	// 在所有恢复逻辑完成后，最后移除故障污点
+	// 这样可以避免在恢复过程中有新的Pod调度到该节点
+	if err := fh.nodeManager.RemoveFailedTaint(ctx, recoveredNodeName); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to remove failed taint", "node", recoveredNodeName)
+		return err
+	}
+
 	return nil
 }
 
-func (fh *FailoverHandler) HandleOverloadRecovery(ctx context.Context, recoveredNodeName string) error {
+func (fh *FailoverHandler) HandleOverloadRecovery(ctx context.Context, recoveredNodeName string, nodeGroup *nodeoperatorv1alpha1.NodeGroup) error {
 	log.FromContext(ctx).Info("Handling overload recovery", "node", recoveredNodeName)
 
 	if err := fh.nodeManager.RemoveOverloadedTaint(ctx, recoveredNodeName); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to remove overloaded taint", "node", recoveredNodeName)
 		return err
+	}
+
+	// 从 NodeGroup Status 中移除过载节点记录
+	if nodeGroup.Status.OverloadedNodes != nil {
+		// 创建新的过载节点列表，排除已恢复的节点
+		var updatedOverloadedNodes []string
+		for _, nodeName := range nodeGroup.Status.OverloadedNodes {
+			if nodeName != recoveredNodeName {
+				updatedOverloadedNodes = append(updatedOverloadedNodes, nodeName)
+			}
+		}
+		nodeGroup.Status.OverloadedNodes = updatedOverloadedNodes
 	}
 
 	return nil

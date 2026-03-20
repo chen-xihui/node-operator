@@ -247,7 +247,7 @@ func (r *NodeGroupReconciler) handleFailures(ctx context.Context, nodeGroup *nod
 			if node.Labels[nodeoperatorv1alpha1.LabelFailed] != "true" {
 				log.FromContext(ctx).Info("Primary node became unhealthy", "node", node.Name)
 				// 调用故障转移处理器处理主用节点故障
-				if err := failoverHandler.HandlePrimaryFailure(ctx, node.Name, nodes); err != nil {
+				if err := failoverHandler.HandlePrimaryFailure(ctx, node.Name, nodes, nodeGroup); err != nil {
 					log.FromContext(ctx).Error(err, "Failed to handle primary failure", "node", node.Name)
 				}
 			}
@@ -300,7 +300,7 @@ func (r *NodeGroupReconciler) handleOverloads(ctx context.Context, nodeGroup *no
 			if node.Labels[nodeoperatorv1alpha1.LabelPaas] == "true" {
 				log.FromContext(ctx).Info("Primary node became overloaded", "node", node.Name)
 				// 调用过载处理器，为过载节点添加污点并可能升级备用节点
-				if err := failoverHandler.HandleOverloadedNode(ctx, node.Name, nodes); err != nil {
+				if err := failoverHandler.HandleOverloadedNode(ctx, node.Name, nodes, nodeGroup); err != nil {
 					log.FromContext(ctx).Error(err, "Failed to handle overloaded node", "node", node.Name)
 				}
 			}
@@ -315,7 +315,7 @@ func (r *NodeGroupReconciler) handleRecoveries(ctx context.Context, nodeGroup *n
 	for _, node := range nodes {
 		if node.IsReady && node.Labels[nodeoperatorv1alpha1.LabelFailed] == "true" {
 			log.FromContext(ctx).Info("Failed node recovered", "node", node.Name)
-			if err := failoverHandler.HandleNodeRecovery(ctx, node.Name, nodes); err != nil {
+			if err := failoverHandler.HandleNodeRecovery(ctx, node.Name, nodes, nodeGroup); err != nil {
 				log.FromContext(ctx).Error(err, "Failed to handle node recovery", "node", node.Name)
 			}
 		}
@@ -323,6 +323,21 @@ func (r *NodeGroupReconciler) handleRecoveries(ctx context.Context, nodeGroup *n
 	return nil
 }
 
+// handleOverloadRecoveries 处理过载节点恢复情况，执行过载恢复后的节点管理
+// 当过载节点资源使用率恢复正常时，采取以下措施：
+//  1. 移除过载污点，使节点恢复正常调度状态
+//  2. 检查是否需要清理升级标记，保持节点角色分配的合理性
+//  3. 更新节点状态信息，确保监控数据的准确性
+//
+// 参数:
+//   - ctx: 上下文，用于日志记录和取消操作
+//   - nodeGroup: 当前处理的 NodeGroup 资源
+//   - nodes: 所有节点的信息列表
+//   - resourceManager: 资源管理器，用于检测节点资源使用率
+//   - failoverHandler: 故障转移处理器，用于执行恢复操作
+//
+// 返回值:
+//   - error: 处理过程中出现的错误，成功时返回 nil
 func (r *NodeGroupReconciler) handleOverloadRecoveries(ctx context.Context, nodeGroup *nodeoperatorv1alpha1.NodeGroup, nodes []internal.NodeInfo, resourceManager *internal.ResourceManager, failoverHandler *internal.FailoverHandler) error {
 	overloadedNodes, err := resourceManager.GetOverloadedNodes(ctx, nil)
 	if err != nil {
@@ -334,8 +349,11 @@ func (r *NodeGroupReconciler) handleOverloadRecoveries(ctx context.Context, node
 		currentOverloaded[nodeName] = true
 	}
 
+	// 检测过载节点恢复情况，处理从过载状态恢复的主用节点
 	for _, node := range nodes {
+		// 检查节点是否是主用节点且当前不再过载
 		if node.Labels[nodeoperatorv1alpha1.LabelPaas] == "true" && !currentOverloaded[node.Name] {
+			// 检查该节点之前是否处于过载状态
 			wasOverloaded := false
 			for _, prevNode := range nodeGroup.Status.OverloadedNodes {
 				if prevNode == node.Name {
@@ -343,9 +361,12 @@ func (r *NodeGroupReconciler) handleOverloadRecoveries(ctx context.Context, node
 					break
 				}
 			}
+
+			// 如果节点之前过载但现在恢复正常，执行过载恢复处理
 			if wasOverloaded {
 				log.FromContext(ctx).Info("Overloaded node recovered", "node", node.Name)
-				if err := failoverHandler.HandleOverloadRecovery(ctx, node.Name); err != nil {
+				// 调用过载恢复处理器，移除过载污点等
+				if err := failoverHandler.HandleOverloadRecovery(ctx, node.Name, nodeGroup); err != nil {
 					log.FromContext(ctx).Error(err, "Failed to handle overload recovery", "node", node.Name)
 				}
 			}

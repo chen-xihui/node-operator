@@ -218,6 +218,33 @@ func (nm *NodeManager) RemovePaasLabel(ctx context.Context, nodeName string) err
 	return nm.UpdateNodeLabels(ctx, nodeName, nil, []string{nodeoperatorv1alpha1.LabelPaas})
 }
 
+func (nm *NodeManager) AddFailedTaint(ctx context.Context, nodeName string) error {
+	log.FromContext(ctx).Info("Adding failed taint to node", "node", nodeName)
+
+	// 创建故障污点：node-role.kubernetes.io/failed=:NoSchedule
+	taint := &corev1.Taint{
+		Key:    nodeoperatorv1alpha1.LabelFailed,
+		Value:  "",
+		Effect: corev1.TaintEffectNoSchedule,
+	}
+
+	return nm.AddTaintToNode(ctx, nodeName, taint)
+}
+
+func (nm *NodeManager) RemoveFailedTaint(ctx context.Context, nodeName string) error {
+	log.FromContext(ctx).Info("Removing failed taint from node", "node", nodeName)
+
+	// 移除故障污点
+	taint := &corev1.Taint{
+		Key:    nodeoperatorv1alpha1.LabelFailed,
+		Value:  "",
+		Effect: corev1.TaintEffectNoSchedule,
+	}
+
+	return nm.RemoveTaintFromNode(ctx, nodeName, taint)
+}
+
+// 保留原有的标签方法用于向后兼容（如果需要的话）
 func (nm *NodeManager) AddFailedLabel(ctx context.Context, nodeName string) error {
 	log.FromContext(ctx).Info("Adding failed label to node", "node", nodeName)
 	return nm.UpdateNodeLabels(ctx, nodeName, map[string]string{
@@ -269,6 +296,42 @@ func (nm *NodeManager) RemoveOverloadedTaint(ctx context.Context, nodeName strin
 	for _, taint := range node.Spec.Taints {
 		if taint.Key != nodeoperatorv1alpha1.TaintOverloaded {
 			newTaints = append(newTaints, taint)
+		}
+	}
+
+	return nm.UpdateNodeTaints(ctx, nodeName, newTaints)
+}
+
+// AddTaintToNode 向节点添加指定的污点
+func (nm *NodeManager) AddTaintToNode(ctx context.Context, nodeName string, taint *corev1.Taint) error {
+	node := &corev1.Node{}
+	if err := nm.client.Get(ctx, client.ObjectKey{Name: nodeName}, node); err != nil {
+		return err
+	}
+
+	// 检查污点是否已存在
+	for _, existingTaint := range node.Spec.Taints {
+		if existingTaint.Key == taint.Key && existingTaint.Effect == taint.Effect {
+			log.FromContext(ctx).Info("Taint already exists on node", "node", nodeName, "taint", taint.Key)
+			return nil
+		}
+	}
+
+	newTaints := append(node.Spec.Taints, *taint)
+	return nm.UpdateNodeTaints(ctx, nodeName, newTaints)
+}
+
+// RemoveTaintFromNode 从节点移除指定的污点
+func (nm *NodeManager) RemoveTaintFromNode(ctx context.Context, nodeName string, taint *corev1.Taint) error {
+	node := &corev1.Node{}
+	if err := nm.client.Get(ctx, client.ObjectKey{Name: nodeName}, node); err != nil {
+		return err
+	}
+
+	var newTaints []corev1.Taint
+	for _, existingTaint := range node.Spec.Taints {
+		if existingTaint.Key != taint.Key || existingTaint.Effect != taint.Effect {
+			newTaints = append(newTaints, existingTaint)
 		}
 	}
 

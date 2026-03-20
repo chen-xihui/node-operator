@@ -57,6 +57,7 @@ affinity:
 |---------|-------|------|----------|
 | `node-role.kubernetes.io/overloaded` | `NoSchedule` | 防止新Pod调度到资源过载的节点 | 资源使用率超过85%的主用节点 |
 | `node-role.kubernetes.io/dedicated` | `NoSchedule` | Pod独占节点 | pod独占节点 |
+| `node-role.kubernetes.io/failed` | `NoSchedule` | 给故障节点加上，等恢复后通过operator进行删除污点，防止恢复后有pod落上去 | 故障的主用节点 |
 
 ### 3.3 标签和污点的管理策略
 
