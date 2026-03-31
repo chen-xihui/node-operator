@@ -6,6 +6,11 @@ import (
 	"strconv"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
+
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -13,14 +18,23 @@ import (
 type ResourceManager struct {
 	client           client.Client
 	thresholdPercent int
+	metricsClient    metricsclientset.Interface
 }
 
 func NewResourceManager(c client.Client, thresholdPercent int) *ResourceManager {
 	if thresholdPercent == 0 {
 		thresholdPercent = 85
 	}
+	// 创建 metrics 客户端
+	config := ctrl.GetConfigOrDie()
+	var metricsClient metricsclientset.Interface
+	if config != nil {
+		metricsClient, _ = metricsclientset.NewForConfig(config)
+	}
+
 	return &ResourceManager{
 		client:           c,
+		metricsClient:    metricsClient,
 		thresholdPercent: thresholdPercent,
 	}
 }
@@ -118,11 +132,93 @@ func (rm *ResourceManager) getNodeMetricsFromKubectl(ctx context.Context, nodeNa
 
 func (rm *ResourceManager) GetAllNodesResourceUsage(ctx context.Context, nodeNames []string) (map[string]*NodeResourceUsage, error) {
 	usages := make(map[string]*NodeResourceUsage)
-	// TODO：这里是否这样实现？是否需要优化？
+
+	// 如果 metrics 客户端不可用，回退到原来的实现
+	if rm.metricsClient == nil {
+		return rm.fallbackGetAllNodesResourceUsage(ctx, nodeNames)
+	}
+
+	// 使用 Kubernetes Metrics API 获取节点指标
+	nodeMetricsList, err := rm.metricsClient.MetricsV1beta1().NodeMetricses().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to get node metrics from Metrics API, falling back to kubectl top")
+		return rm.fallbackGetAllNodesResourceUsage(ctx, nodeNames)
+	}
+
+	// 获取节点信息以获取可分配资源
+	nodeList := &corev1.NodeList{}
+	if err := rm.client.List(ctx, nodeList); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to get node list")
+		return usages, err
+	}
+
+	nodeAllocatable := make(map[string]corev1.ResourceList)
+	for _, node := range nodeList.Items {
+		nodeAllocatable[node.Name] = node.Status.Allocatable
+	}
+
+	// 处理每个节点的指标
+	for _, nodeMetrics := range nodeMetricsList.Items {
+		nodeName := nodeMetrics.Name
+
+		// 检查是否在指定的节点列表中
+		found := len(nodeNames) == 0
+		if !found {
+			for _, n := range nodeNames {
+				if n == nodeName {
+					found = true
+					break
+				}
+			}
+		}
+
+		if !found {
+			continue
+		}
+
+		// 获取节点的可分配资源
+		allocatable, exists := nodeAllocatable[nodeName]
+		if !exists {
+			log.FromContext(ctx).Info("Node allocatable not found", "node", nodeName)
+			continue
+		}
+
+		// 计算 CPU 使用率
+		cpuUsage := nodeMetrics.Usage[corev1.ResourceCPU]
+		cpuAllocatable := allocatable[corev1.ResourceCPU]
+		cpuPercent := 0
+		if !cpuAllocatable.IsZero() {
+			cpuPercent = int(float64(cpuUsage.MilliValue()) / float64(cpuAllocatable.MilliValue()) * 100)
+		}
+
+		// 计算内存使用率
+		memUsage := nodeMetrics.Usage[corev1.ResourceMemory]
+		memAllocatable := allocatable[corev1.ResourceMemory]
+		memPercent := 0
+		if !memAllocatable.IsZero() {
+			memPercent = int(float64(memUsage.Value()) / float64(memAllocatable.Value()) * 100)
+		}
+
+		usages[nodeName] = &NodeResourceUsage{
+			NodeName:      nodeName,
+			CPUUsed:       cpuUsage.MilliValue(),
+			MemUsed:       memUsage.Value(),
+			CPUPercent:    cpuPercent,
+			MemoryPercent: memPercent,
+		}
+	}
+
+	return usages, nil
+}
+
+// fallbackGetAllNodesResourceUsage 使用 kubectl top 命令作为回退方案
+func (rm *ResourceManager) fallbackGetAllNodesResourceUsage(ctx context.Context, nodeNames []string) (map[string]*NodeResourceUsage, error) {
+	usages := make(map[string]*NodeResourceUsage)
+
 	cmd := exec.Command("kubectl", "top", "node", "--no-headers")
 	output, err := cmd.Output()
 	if err != nil {
-		log.FromContext(ctx).Error(err, "Failed to get node metrics")
+		log.FromContext(ctx).Error(err, "Failed to get node metrics from kubectl top")
 		return usages, err
 	}
 
